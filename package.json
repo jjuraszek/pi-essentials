@@ -1,0 +1,32 @@
+{
+  "name": "pi-essentials",
+  "version": "0.1.0",
+  "description": "Personal pack of Pi coding-agent extensions. First-party-quality tools that keep context clean. Currently ships a context-safe fetch tool.",
+  "type": "module",
+  "scripts": {
+    "build": "echo 'nothing to build'",
+    "check": "echo 'nothing to check'"
+  },
+  "keywords": [
+    "pi-package"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jjuraszek/pi-essentials.git"
+  },
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/jjuraszek/pi-essentials/issues"
+  },
+  "homepage": "https://github.com/jjuraszek/pi-essentials#readme",
+  "pi": {
+    "extensions": [
+      "./fetch.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "@sinclair/typebox": "*"
+  }
+}
