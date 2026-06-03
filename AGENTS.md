@@ -44,10 +44,10 @@ prompts/release.md                        # /release prompt template
 ## Workflow
 
 - **Adding an extension:** drop `<name>.ts` exporting `default function (pi: ExtensionAPI)`, add `"./<name>.ts"` to `pi.extensions`, document it in `README.md`, add a `CHANGELOG.md` entry.
-- **Typecheck before committing.** No package script is wired; install deps transiently and run tsc:
+- **Typecheck before committing.** The `test` (`node --test`) and `typecheck` (`bun x tsc`) scripts are wired; both require deps installed transiently first (see the install line below):
   ```bash
-  npm install --no-save @earendil-works/pi-coding-agent @earendil-works/pi-tui @sinclair/typebox @types/node
-  bun x tsc --noEmit --target es2022 --module nodenext --moduleResolution nodenext --strict --skipLibCheck --esModuleInterop --resolveJsonModule --lib es2022 --types node fetch.ts
+  npm install --no-save @earendil-works/pi-coding-agent @earendil-works/pi-tui @sinclair/typebox @types/node jsdom @mozilla/readability turndown turndown-plugin-gfm @types/jsdom @types/turndown
+  bun x tsc --noEmit --allowImportingTsExtensions --target es2022 --module nodenext --moduleResolution nodenext --strict --skipLibCheck --esModuleInterop --resolveJsonModule --lib es2022 --types node fetch.ts fetch.test.ts types/turndown-plugin-gfm.d.ts
   ```
 - **Releases use the `release` skill.** Consumed via git **tag** pins (`git:github.com/jjuraszek/pi-essentials@vX.Y.Z`); the script bumps the version, pushes the tag, then rewrites matching pins in `~/.pi/agent*/settings.json`. No npm publish. See `.agents/skills/release/SKILL.md` (`--dry-run` / `--no-update-pins` flags).
 - **Smoke-test** with `pi -e ./fetch.ts -p "fetch https://example.com"`.

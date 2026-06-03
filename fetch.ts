@@ -1,17 +1,17 @@
 /**
  * Fetch Extension
  *
- * Registers a `fetch` tool that lets the agent retrieve URLs.
- * HTML is converted to text with links preserved as `text (url)` and entities
- * decoded. Response charset is read from the Content-Type header.
- *
- * Context hygiene: large bodies are written to a file under the OS temp dir and
- * only a preview + file handle is returned inline. The agent reads slices with
- * the `read` tool (offset/limit) or greps the file instead of swallowing the
- * whole payload into context. Small bodies are returned inline unchanged.
+ * Registers a `fetch` tool that retrieves URLs with context-safe output routing.
+ * HTML is extracted to structured Markdown via readability + turndown (boilerplate
+ * stripped, headings/lists/tables/code fences preserved). Binary content (images,
+ * PDFs, archives, etc.) is saved untouched to a temp file and only the path is
+ * returned. Text/Markdown/JSON over 32 KB or 1000 lines is written to a temp file
+ * with a 60-line preview; smaller content is returned inline. Parsable downloads
+ * are capped at 1 MB; binary downloads at 50 MB.
  */
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, createWriteStream } from "node:fs";
+import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
@@ -19,6 +19,10 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { formatSize, keyHint } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
+import { JSDOM } from "jsdom";
+import { Readability } from "@mozilla/readability";
+import TurndownService from "turndown";
+import { gfm } from "turndown-plugin-gfm";
 
 interface FetchToolDetails {
 	url?: string;
@@ -27,18 +31,18 @@ interface FetchToolDetails {
 	charset?: string;
 	bytes?: number;
 	truncated?: boolean;
+	category?: "binary" | "markdown" | "json" | "text";
 	spilled?: boolean;
 	file?: string;
 	lines?: number;
 }
 
-const MAX_BYTES = 1_000_000; // 1 MB download cap
+const PARSABLE_MAX_BYTES = 1_000_000; // text/markdown/json download ceiling
+const BINARY_MAX_BYTES = 50_000_000; // file-destined download ceiling
+const SNIFF_MAX_BYTES = 64_000; // classification window
 const DEFAULT_TIMEOUT_MS = 20_000;
-// Spill to file when the converted body exceeds either threshold. Matched to
-// the `read` tool's own truncation limits so an inline result is always one the
-// agent could have read in full anyway.
-const INLINE_MAX_BYTES = 50_000;
-const INLINE_MAX_LINES = 2000;
+const INLINE_MAX_BYTES = 32_000;
+const INLINE_MAX_LINES = 1_000;
 const PREVIEW_LINES = 60;
 const PREVIEW_MAX_BYTES = 4_000;
 const FIREFOX_UA =
@@ -46,91 +50,17 @@ const FIREFOX_UA =
 const DEFAULT_ACCEPT =
 	"text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
 
-const NAMED_ENTITIES: Record<string, string> = {
-	amp: "&",
-	lt: "<",
-	gt: ">",
-	quot: '"',
-	apos: "'",
-	nbsp: " ",
-	copy: "\u00a9",
-	reg: "\u00ae",
-	hellip: "\u2026",
-	mdash: "\u2014",
-	ndash: "\u2013",
-	lsquo: "\u2018",
-	rsquo: "\u2019",
-	ldquo: "\u201c",
-	rdquo: "\u201d",
-};
-
-function decodeEntities(s: string): string {
-	return s
-		.replace(/&#x([0-9a-f]+);/gi, (_, h) =>
-			String.fromCodePoint(parseInt(h, 16)),
-		)
-		.replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(parseInt(d, 10)))
-		.replace(/&([a-z]+);/gi, (m, n) => NAMED_ENTITIES[n.toLowerCase()] ?? m);
-}
-
-function htmlToText(html: string): string {
-	const withoutScripts = html
-		.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "")
-		.replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "")
-		.replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, "");
-
-	const withLinks = withoutScripts.replace(
-		/<a\b[^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi,
-		(_, href, inner) => {
-			const label = inner.replace(/<[^>]+>/g, "").trim();
-			return label ? `${label} (${href})` : `(${href})`;
-		},
-	);
-
-	const blockBreaks = withLinks
-		.replace(/<br\s*\/?>/gi, "\n")
-		.replace(/<\/(p|div|li|h[1-6]|tr|section|article|header|footer)>/gi, "\n");
-
-	return decodeEntities(blockBreaks.replace(/<[^>]+>/g, ""))
-		.replace(/[ \t]+\n/g, "\n")
-		.replace(/\n{3,}/g, "\n\n")
-		.trim();
-}
-
 function parseCharset(contentType: string): string {
 	const m = /charset\s*=\s*"?([^";\s]+)"?/i.exec(contentType);
 	return (m?.[1] ?? "utf-8").trim().toLowerCase();
 }
 
-function decodeBuffer(buf: ArrayBuffer, charset: string): string {
+function decodeBuffer(buf: Buffer, charset: string): string {
 	try {
 		return new TextDecoder(charset, { fatal: false }).decode(buf);
 	} catch {
 		return new TextDecoder("utf-8", { fatal: false }).decode(buf);
 	}
-}
-
-function pickExtension(contentType: string, raw: boolean, isHtml: boolean): string {
-	if (raw && isHtml) return "html";
-	if (contentType.includes("json")) return "json";
-	if (contentType.includes("xml")) return "xml";
-	return "txt";
-}
-
-function spillToFile(url: string, body: string, ext: string): string {
-	const dir = join(tmpdir(), "pi-fetch");
-	mkdirSync(dir, { recursive: true });
-	let host = "page";
-	try {
-		host = new URL(url).hostname.replace(/[^a-z0-9.-]/gi, "_") || "page";
-	} catch {
-		// keep default
-	}
-	const hash = createHash("sha1").update(url).digest("hex").slice(0, 8);
-	const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-	const file = join(dir, `${stamp}-${host}-${hash}.${ext}`);
-	writeFileSync(file, body, "utf8");
-	return file;
 }
 
 function buildPreview(body: string): string {
@@ -141,17 +71,247 @@ function buildPreview(body: string): string {
 	return preview;
 }
 
+// --- Turndown singleton ---
+
+const turndownService = new TurndownService({
+	headingStyle: "atx",
+	codeBlockStyle: "fenced",
+	bulletListMarker: "-",
+});
+turndownService.use(gfm);
+
+// --- Content classification ---
+
+function mimeType(contentType: string): string {
+	return contentType.split(";")[0].trim().toLowerCase();
+}
+
+const TEXT_ALLOWLIST: RegExp[] = [
+	/^text\//,
+	/^application\/(json|xml|xhtml\+xml|javascript)$/,
+	/\+json$/,
+	/\+xml$/,
+];
+// octet-stream is intentionally absent — it falls to the NUL-sniff branch.
+const KNOWN_BINARY: RegExp[] = [
+	/^audio\//,
+	/^video\//,
+	/^font\//,
+	/^application\/(pdf|zip|gzip|x-tar|x-7z-compressed|x-rar-compressed|wasm)$/,
+];
+
+export function categorize(contentType: string, sniff: Buffer, raw: boolean): "binary" | "markdown" | "json" | "text" {
+	const mime = mimeType(contentType);
+	if (/^image\//.test(mime)) return "binary"; // includes image/svg+xml
+	const isText = TEXT_ALLOWLIST.some((re) => re.test(mime));
+	const isBinary = KNOWN_BINARY.some((re) => re.test(mime));
+	if (!isText && !isBinary) return sniff.includes(0) ? "binary" : "text";
+	if (isBinary && !isText) return "binary";
+	if (sniff.includes(0)) return "binary"; // NUL downgrade of a text candidate
+	if (raw) return "text"; // raw=true skips all transformations (markdown + JSON pretty-print)
+	if (mime === "text/html" || mime === "application/xhtml+xml") return "markdown";
+	if (mime === "application/json" || /\+json$/.test(mime)) return "json";
+	return "text";
+}
+
+export function htmlToMarkdown(html: string, url: string): string | null {
+	let doc: Document;
+	try {
+		doc = new JSDOM(html, { url }).window.document;
+	} catch {
+		return null;
+	}
+	let article: { title?: string | null; content?: string | null } | null = null;
+	try {
+		article = new Readability(doc).parse();
+	} catch {
+		return null;
+	}
+	if (!article?.content) return null;
+	let md: string;
+	try {
+		md = turndownService.turndown(article.content).trim();
+	} catch {
+		return null;
+	}
+	if (!md) return null;
+	if (article.title) md = `# ${article.title}\n\n${md}`;
+	return md;
+}
+
+export function prettyJson(text: string): string {
+	try {
+		return JSON.stringify(JSON.parse(text), null, 2);
+	} catch {
+		return text;
+	}
+}
+
+export function applyGate(body: string): { spill: boolean; bytes: number; lines: number } {
+	const bytes = Buffer.byteLength(body, "utf8");
+	const lines = body.length ? body.split("\n").length : 0;
+	const spill = body.length > 0 && (bytes > INLINE_MAX_BYTES || lines > INLINE_MAX_LINES);
+	return { spill, bytes, lines };
+}
+
+// --- Temp file helpers ---
+
+function tempFilePath(url: string, ext: string): string {
+	const dir = join(tmpdir(), "pi-fetch");
+	mkdirSync(dir, { recursive: true });
+	let host = "page";
+	try {
+		host = new URL(url).hostname.replace(/[^a-z0-9.-]/gi, "_") || "page";
+	} catch {
+		// keep default
+	}
+	const hash = createHash("sha1").update(url).digest("hex").slice(0, 8);
+	const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+	return join(dir, `${stamp}-${host}-${hash}.${ext}`);
+}
+
+function spillToFile(url: string, body: string, ext: string): string {
+	const file = tempFilePath(url, ext);
+	writeFileSync(file, body, "utf8");
+	return file;
+}
+
+function textExtension(category: "markdown" | "json" | "text", contentType: string): string {
+	if (category === "markdown") return "md";
+	if (category === "json") return "json";
+	return mimeType(contentType).includes("xml") ? "xml" : "txt";
+}
+
+const BINARY_EXT: Record<string, string> = {
+	"application/pdf": "pdf",
+	"application/zip": "zip",
+	"application/gzip": "gz",
+	"image/png": "png",
+	"image/jpeg": "jpg",
+	"image/gif": "gif",
+	"image/webp": "webp",
+	"image/svg+xml": "svg",
+};
+
+function binaryExtension(contentType: string): string {
+	const mime = mimeType(contentType);
+	if (BINARY_EXT[mime]) return BINARY_EXT[mime];
+	const sub = (mime.split("/")[1] ?? "").replace(/^x-/, "").replace(/[^a-z0-9]+/g, "").slice(0, 8);
+	return sub || "bin";
+}
+
+// --- Streaming body collection ---
+
+type Category = "binary" | "markdown" | "json" | "text";
+
+interface CollectedBody {
+	category: Category;
+	buffer?: Buffer; // text/markdown/json (raw, pre-transform)
+	file?: string; // binary
+	bytes: number; // bytes kept (post-cap)
+	truncated: boolean;
+}
+
+function writeChunk(stream: ReturnType<typeof createWriteStream>, b: Buffer): Promise<void> {
+	return new Promise((resolve, reject) => {
+		stream.write(b, (err) => (err ? reject(err) : resolve()));
+	});
+}
+
+async function pumpToFile(
+	stream: ReturnType<typeof createWriteStream>,
+	reader: ReadableStreamDefaultReader<Uint8Array>,
+	prefix: Buffer,
+	exhausted: boolean,
+): Promise<{ bytes: number; truncated: boolean }> {
+	let bytes = 0;
+	let truncated = false;
+	let head = prefix;
+	if (head.length > BINARY_MAX_BYTES) {
+		head = head.subarray(0, BINARY_MAX_BYTES);
+		truncated = true;
+	}
+	await writeChunk(stream, head);
+	bytes += head.length;
+	while (!exhausted && !truncated) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		let chunk = Buffer.from(value);
+		if (bytes + chunk.length > BINARY_MAX_BYTES) {
+			chunk = chunk.subarray(0, BINARY_MAX_BYTES - bytes);
+			truncated = true;
+		}
+		await writeChunk(stream, chunk);
+		bytes += chunk.length;
+	}
+	await new Promise<void>((resolve, reject) => stream.end((err?: Error | null) => (err ? reject(err) : resolve())));
+	return { bytes, truncated };
+}
+
+export async function collectBody(res: Response, contentType: string, raw: boolean): Promise<CollectedBody> {
+	const reader = res.body!.getReader();
+	const prefixParts: Buffer[] = [];
+	let prefixLen = 0;
+	let exhausted = false;
+	while (prefixLen < SNIFF_MAX_BYTES) {
+		const { done, value } = await reader.read();
+		if (done) {
+			exhausted = true;
+			break;
+		}
+		const chunk = Buffer.from(value);
+		prefixParts.push(chunk);
+		prefixLen += chunk.length;
+	}
+	const prefix = Buffer.concat(prefixParts);
+	const category = categorize(contentType, prefix.subarray(0, SNIFF_MAX_BYTES), raw);
+
+	if (category === "binary") {
+		const file = tempFilePath(res.url, binaryExtension(contentType));
+		const stream = createWriteStream(file);
+		try {
+			const { bytes, truncated } = await pumpToFile(stream, reader, prefix, exhausted);
+			if (truncated) await reader.cancel().catch(() => {});
+			return { category, file, bytes, truncated };
+		} catch (err) {
+			stream.destroy();
+			await rm(file, { force: true });
+			await reader.cancel().catch(() => {});
+			throw err;
+		}
+	}
+
+	const parts = [prefix];
+	let bytes = prefix.length;
+	let streamDone = exhausted;
+	while (!streamDone && bytes < PARSABLE_MAX_BYTES) {
+		const { done, value } = await reader.read();
+		if (done) { streamDone = true; break; }
+		const chunk = Buffer.from(value);
+		parts.push(chunk);
+		bytes += chunk.length;
+	}
+	let buffer = Buffer.concat(parts);
+	if (buffer.length > PARSABLE_MAX_BYTES) {
+		buffer = buffer.subarray(0, PARSABLE_MAX_BYTES);
+	}
+	const truncated = !streamDone;
+	if (truncated) await reader.cancel().catch(() => {});
+	return { category, buffer, bytes: buffer.length, truncated };
+}
+
 export default function fetchExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "fetch",
 		label: "Fetch URL",
 		description:
-			"Fetch a URL over HTTP(S) and return its body. HTML is converted to text with links inlined as `text (url)`. Download capped at 1MB. Large bodies are written to a temp file and only a preview + file path is returned — read slices of that file with the read tool (offset/limit) or grep it instead of reading the whole thing.",
+			"Fetch a URL over HTTP(S). HTML is extracted to Markdown (readability + turndown). Binary content (images, PDFs, archives) is saved untouched to a temp file and only a path is returned. Text/Markdown/JSON over 32KB or 1000 lines is written to a temp file with a 60-line preview; smaller content is returned inline. Parsable downloads are capped at 1MB, binary at 50MB.",
 		promptSnippet: "Fetch the contents of a URL",
 		promptGuidelines: [
 			"Use fetch when the user provides a URL or asks to read web content.",
-			"Pass raw=true only when the caller needs unmodified HTML/JSON.",
-			"If the result says the body was written to a file, do not read the whole file blindly — grep it or read with offset/limit to pull only the parts you need.",
+			"Binary responses return a file path only — pass that path to a tool that can process the bytes; do not expect inline content.",
+			"When the body is written to a file, grep it or read with offset/limit. Converted Markdown is grep-able by heading (^#).",
+			"Pass raw=true to skip Markdown/JSON conversion and get the decoded body as-is (still subject to the size gate).",
 		],
 		parameters: Type.Object({
 			url: Type.String({ description: "Absolute http(s) URL" }),
@@ -168,7 +328,7 @@ export default function fetchExtension(pi: ExtensionAPI) {
 			),
 			body: Type.Optional(Type.String({ description: "Request body for POST" })),
 			raw: Type.Optional(
-				Type.Boolean({ description: "Return raw body without HTML stripping" }),
+				Type.Boolean({ description: "Skip HTML→Markdown and JSON pretty-printing; return the decoded body as-is" }),
 			),
 			timeoutMs: Type.Optional(Type.Number({ default: DEFAULT_TIMEOUT_MS })),
 		}),
@@ -201,74 +361,101 @@ export default function fetchExtension(pi: ExtensionAPI) {
 					redirect: "follow",
 				});
 
-				const buf = await res.arrayBuffer();
-				const truncated = buf.byteLength > MAX_BYTES;
-				const slice = truncated ? buf.slice(0, MAX_BYTES) : buf;
 				const ct = res.headers.get("content-type") ?? "";
 				const charset = parseCharset(ct);
-				const text = decodeBuffer(slice, charset);
-				const isHtml = ct.includes("html");
-				const body = !params.raw && isHtml ? htmlToText(text) : text;
-
 				const header = [
 					`HTTP ${res.status} ${res.statusText}`,
 					`Content-Type: ${ct}`,
 					`Charset: ${charset}`,
 				];
 
-				const bodyBytes = Buffer.byteLength(body, "utf8");
-				const lineCount = body.length ? body.split("\n").length : 0;
-				const shouldSpill =
-					body.length > 0 &&
-					(bodyBytes > INLINE_MAX_BYTES || lineCount > INLINE_MAX_LINES);
+				// HEAD or bodyless response: headers only.
+				if (!res.body || (params.method ?? "GET") === "HEAD") {
+					return {
+						content: [{ type: "text", text: [...header, "Length: 0 (no body)"].join("\n") }],
+						details: { url: res.url, status: res.status, contentType: ct, charset, bytes: 0 } as FetchToolDetails,
+					};
+				}
 
+				const collected = await collectBody(res, ct, params.raw ?? false);
 				const baseDetails: FetchToolDetails = {
 					url: res.url,
 					status: res.status,
 					contentType: ct,
 					charset,
-					bytes: buf.byteLength,
-					truncated,
-					lines: lineCount,
+					bytes: collected.bytes,
+					truncated: collected.truncated,
+					category: collected.category,
 				};
 
-				if (!shouldSpill) {
+				if (collected.category === "binary") {
+					const note = collected.truncated ? " (truncated to 50MB)" : "";
 					return {
-						content: [
-							{
-								type: "text",
-								text: [
-									...header,
-									`Length: ${buf.byteLength}${truncated ? " (truncated to 1MB)" : ""}`,
-									"",
-									body,
-								].join("\n"),
-							},
-						],
+						content: [{
+							type: "text",
+							text: [
+								...header,
+								`Body: ${formatSize(collected.bytes)}${note} binary (${mimeType(ct) || "unknown"}) — saved untouched for processing`,
+								`Saved-To: ${collected.file}`,
+								"",
+								"Binary content is not decoded. Use the appropriate tool to process the file at the path above.",
+							].join("\n"),
+						}],
+						details: { ...baseDetails, spilled: true, file: collected.file },
+					};
+				}
+
+				const decoded = decodeBuffer(collected.buffer!, charset);
+				let body: string;
+				let effectiveCategory: "markdown" | "json" | "text" = collected.category;
+				if (collected.category === "markdown") {
+					const md = htmlToMarkdown(decoded, res.url);
+					if (md !== null) {
+						body = md;
+					} else {
+						body = decoded; // raw HTML text fallback
+						effectiveCategory = "text";
+					}
+				} else if (collected.category === "json") {
+					body = prettyJson(decoded);
+				} else {
+					body = decoded;
+				}
+
+				baseDetails.category = effectiveCategory;
+				const truncNote = collected.truncated ? "\n[Note: source truncated at 1MB — content may be partial]" : "";
+				const lengthLine = `Length: ${collected.bytes}${collected.truncated ? " (truncated to 1MB)" : ""}`;
+				const { spill, bytes: bodyBytes, lines: lineCount } = applyGate(body);
+				baseDetails.lines = lineCount;
+
+				if (!spill) {
+					return {
+						content: [{ type: "text", text: [...header, lengthLine, "", body + truncNote].join("\n") }],
 						details: { ...baseDetails, spilled: false },
 					};
 				}
 
-				const ext = pickExtension(ct, params.raw ?? false, isHtml);
+				const ext = textExtension(effectiveCategory, ct);
 				const file = spillToFile(res.url, body, ext);
-
+				const grepHint = effectiveCategory === "markdown"
+					? "Read slices of this file with the read tool (offset/limit) or grep it; do not read the whole file unless you must. Markdown is grep-able by heading (^#)."
+					: "Read slices of this file with the read tool (offset/limit) or grep it; do not read the whole file unless you must.";
 				return {
-					content: [
-						{
-							type: "text",
-							text: [
-								...header,
-								`Length: ${buf.byteLength}${truncated ? " (truncated to 1MB)" : ""}`,
-								`Body: ${formatSize(bodyBytes)} across ${lineCount} lines — written to file (too large to inline)`,
-								`Saved-To: ${file}`,
-								"",
-								"Read slices of this file with the read tool (offset/limit) or grep it; do not read the whole file unless you must.",
-								"",
-								`----- preview (first ${PREVIEW_LINES} lines) -----`,
-								buildPreview(body),
-							].join("\n"),
-						},
-					],
+					content: [{
+						type: "text",
+						text: [
+							...header,
+							lengthLine,
+							`Body: ${formatSize(bodyBytes)} across ${lineCount} lines — written to file (too large to inline)`,
+							`Saved-To: ${file}`,
+							...(collected.truncated ? ["[Note: source truncated at 1MB — content may be partial]"] : []),
+							"",
+							grepHint,
+							"",
+							`----- preview (first ${PREVIEW_LINES} lines) -----`,
+							buildPreview(body),
+						].join("\n"),
+					}],
 					details: { ...baseDetails, spilled: true, file },
 				};
 			} finally {
@@ -324,7 +511,9 @@ export default function fetchExtension(pi: ExtensionAPI) {
 				if (details.truncated) sizeText += " (truncated)";
 				parts.push(theme.fg("dim", sizeText));
 			}
-			if (details?.spilled) {
+			if (details?.category === "binary") {
+				parts.push(theme.fg("warning", "binary → file"));
+			} else if (details?.spilled) {
 				parts.push(theme.fg("warning", "→ file"));
 			}
 

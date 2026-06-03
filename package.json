@@ -4,8 +4,8 @@
   "description": "Personal pack of Pi coding-agent extensions. First-party-quality tools that keep context clean. Currently ships a context-safe fetch tool.",
   "type": "module",
   "scripts": {
-    "build": "echo 'nothing to build'",
-    "check": "echo 'nothing to check'"
+    "test": "node --test fetch.test.ts",
+    "typecheck": "bun x tsc --noEmit --allowImportingTsExtensions --target es2022 --module nodenext --moduleResolution nodenext --strict --skipLibCheck --esModuleInterop --resolveJsonModule --lib es2022 --types node fetch.ts fetch.test.ts types/turndown-plugin-gfm.d.ts"
   },
   "keywords": [
     "pi-package"
@@ -23,6 +23,12 @@
     "extensions": [
       "./fetch.ts"
     ]
+  },
+  "dependencies": {
+    "@mozilla/readability": "^0.6.0",
+    "jsdom": "^26.0.0",
+    "turndown": "^7.2.0",
+    "turndown-plugin-gfm": "^1.0.2"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
