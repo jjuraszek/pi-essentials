@@ -185,6 +185,8 @@ function textExtension(category: "markdown" | "json" | "text", contentType: stri
 const BINARY_EXT: Record<string, string> = {
 	"application/pdf": "pdf",
 	"application/zip": "zip",
+	"application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+	"application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
 	"application/gzip": "gz",
 	"image/png": "png",
 	"image/jpeg": "jpg",
@@ -193,7 +195,7 @@ const BINARY_EXT: Record<string, string> = {
 	"image/svg+xml": "svg",
 };
 
-function binaryExtension(contentType: string): string {
+export function binaryExtension(contentType: string): string {
 	const mime = mimeType(contentType);
 	if (BINARY_EXT[mime]) return BINARY_EXT[mime];
 	const sub = (mime.split("/")[1] ?? "").replace(/^x-/, "").replace(/[^a-z0-9]+/g, "").slice(0, 8);

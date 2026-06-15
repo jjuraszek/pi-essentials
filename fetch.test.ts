@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { rmSync, existsSync, readFileSync } from "node:fs";
-import { categorize, htmlToMarkdown, prettyJson, applyGate, collectBody } from "./fetch.ts";
+import { categorize, htmlToMarkdown, prettyJson, applyGate, collectBody, binaryExtension } from "./fetch.ts";
 
 const empty = Buffer.alloc(0);
 const withNul = Buffer.from([0x68, 0x00, 0x69]); // "h\0i"
@@ -151,4 +151,10 @@ test("collectBody: text truncation at 1MB — truncated=true, buffer capped", as
 	assert.equal(result.category, "text");
 	assert.ok(result.buffer);
 	assert.equal(result.buffer!.length, PARSABLE_MAX);
+});
+
+test("binaryExtension: OOXML office types map to docx/pptx (fetch->doc_to_md chain)", () => {
+	assert.equal(binaryExtension("application/vnd.openxmlformats-officedocument.wordprocessingml.document"), "docx");
+	assert.equal(binaryExtension("application/vnd.openxmlformats-officedocument.presentationml.presentation"), "pptx");
+	assert.equal(binaryExtension("application/pdf"), "pdf");
 });

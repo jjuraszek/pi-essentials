@@ -1,11 +1,11 @@
 {
   "name": "pi-essentials",
   "version": "0.2.0",
-  "description": "Personal pack of Pi coding-agent extensions. First-party-quality tools that keep context clean. Currently ships a context-safe fetch tool.",
+  "description": "Personal pack of Pi coding-agent extensions. First-party-quality tools that keep context clean. Ships a context-safe fetch tool and a doc_to_md PDF/DOCX/PPTX-to-Markdown converter.",
   "type": "module",
   "scripts": {
-    "test": "node --test fetch.test.ts",
-    "typecheck": "bun x tsc --noEmit --allowImportingTsExtensions --target es2022 --module nodenext --moduleResolution nodenext --strict --skipLibCheck --esModuleInterop --resolveJsonModule --lib es2022 --types node fetch.ts fetch.test.ts types/turndown-plugin-gfm.d.ts"
+    "test": "node --test \"*.test.ts\"",
+    "typecheck": "bun x tsc --noEmit --allowImportingTsExtensions --target es2022 --module nodenext --moduleResolution nodenext --strict --skipLibCheck --esModuleInterop --resolveJsonModule --lib es2022 --types node fetch.ts fetch.test.ts doc_to_md.ts doc_to_md.test.ts types/turndown-plugin-gfm.d.ts"
   },
   "keywords": [
     "pi-package"
@@ -21,14 +21,16 @@
   "homepage": "https://github.com/jjuraszek/pi-essentials#readme",
   "pi": {
     "extensions": [
-      "./fetch.ts"
+      "./fetch.ts",
+      "./doc_to_md.ts"
     ]
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",
     "jsdom": "^26.0.0",
     "turndown": "^7.2.0",
-    "turndown-plugin-gfm": "^1.0.2"
+    "turndown-plugin-gfm": "^1.0.2",
+    "unpdf": "^1.6.0"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",

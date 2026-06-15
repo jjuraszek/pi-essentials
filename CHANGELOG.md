@@ -7,6 +7,18 @@ This package is consumed via git tag pins (`git:github.com/jjuraszek/pi-essentia
 The release helper at `.agents/skills/release/scripts/release.sh` cuts the tag and
 automatically rewrites every `~/.pi/agent*/settings.json` that pins this repo.
 
+## v1.0.0 — 2026-06-15
+
+- **New `doc_to_md` extension.** Converts a local PDF/DOCX/PPTX to Markdown.
+  - **Primary engine `pymupdf4llm`** (high fidelity) run as an arms-length subprocess via `uv run --with pymupdf4llm==<pin> --python 3.14` — no project venv, wheel fetched into uv's cache on first use, Python pinned to 3.14. Warmed once per process (generous install budget, then a short per-document budget).
+  - **Fallback engine `unpdf`** (pure JS) when `uv` is absent, the warm probe fails, or a conversion times out. Degraded output is marked and carries a `Fallback-Reason:`.
+  - **DOCX/PPTX** convert to PDF via headless LibreOffice (`soffice`, isolated per-call profile) then through the same PDF pipeline; missing `soffice` errors office inputs only. Spreadsheets/other formats out of scope.
+  - **Size-gated** like `fetch` (≤ 32 KB and ≤ 1000 lines inline, else spill to `${TMPDIR}/pi-doc-to-md/` with a preview).
+  - **Config via env vars:** `PI_DOC_TO_MD_PYMUPDF_VERSION` (default `1.27.2.3`), `PI_DOC_TO_MD_WARM_TIMEOUT_MS` (120000), `PI_DOC_TO_MD_CONVERT_TIMEOUT_MS` (60000), `PI_DOC_TO_MD_SOFFICE_TIMEOUT_MS` (120000).
+  - **AGPL note:** PyMuPDF/pymupdf4llm are AGPL-3.0; no code is shipped (uv fetches the wheel at runtime) and it runs as a separate subprocess, keeping pi-essentials MIT.
+- **`fetch`:** map OOXML content types (`...wordprocessingml.document`, `...presentationml.presentation`) to `.docx`/`.pptx` so fetched office docs are saved with the correct extension for the `fetch` → `doc_to_md` chain.
+- **New runtime dependency:** `unpdf`. Optional system binaries `uv` and `soffice` are detected at runtime.
+
 ## v0.2.0 — 2026-06-03
 
 - **Content routing rewrite.** `fetch` now classifies responses by type and routes them:

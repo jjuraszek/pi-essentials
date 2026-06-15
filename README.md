@@ -7,6 +7,7 @@ A small pack of [Pi coding-agent](https://github.com/badlogic/pi-mono) extension
 | Extension | Tool | What it does |
 |---|---|---|
 | `fetch.ts` | `fetch` | Retrieve URLs over HTTP(S). HTML → Markdown (main-content extraction, stripped boilerplate). Binary content saved untouched to a temp file. **Context-safe:** output over 32 KB or 1000 lines is written to a temp file with a preview + file path. Prevents a single fetch from flooding the context window. |
+| `doc_to_md.ts` | `doc_to_md` | Convert a local PDF/DOCX/PPTX to Markdown. High-fidelity via `pymupdf4llm` (run through `uv`, fetched on first use); degraded pure-JS fallback (`unpdf`) when `uv`/Python is unavailable or conversion times out. DOCX/PPTX convert via LibreOffice (`soffice`) to PDF first. Same 32 KB / 1000-line size gate as `fetch`. |
 
 ### fetch — content routing & context hygiene
 
@@ -40,6 +41,34 @@ A small pack of [Pi coding-agent](https://github.com/badlogic/pi-mono) extension
 **Truncation:** Parsable content over 1 MB is truncated with a `(truncated to 1MB)` note; binary over 50 MB notes `(truncated to 50MB)`.
 
 **Runtime dependencies:** `jsdom`, `@mozilla/readability`, `turndown`, `turndown-plugin-gfm`. When consumed via a git tag pin, pi installs these automatically — no manual setup needed.
+
+### doc_to_md — local document → Markdown
+
+`doc_to_md` takes a **local file path** (`.pdf`, `.docx`, `.pptx`) and returns Markdown. For remote documents, `fetch` the URL first (it saves binaries to a temp path), then pass that path here.
+
+**Two engines, auto-selected:**
+
+- **Primary — `pymupdf4llm`** (high fidelity: headings, tables, reading order). Runs as an arms-length subprocess via `uv run --with pymupdf4llm==<pin> --python 3.14`. `uv` fetches the wheel into its own cache on first use (one-time download); Python 3.14 is fixed. Warmed once per process: the first call probes/installs (generous budget), later calls reuse the warm cache with a shorter per-document budget.
+- **Fallback — `unpdf`** (pure JS, bundled PDF.js). Used when `uv` is not on `PATH`, the warm probe fails, or a conversion times out. Output is plain text with page breaks — **no faithful tables/headings**. Degraded results are marked in the output (`[Note: degraded extraction via unpdf ...]`) and carry a `Fallback-Reason:` line.
+
+**Office documents (`.docx`, `.pptx`):** converted to PDF by headless LibreOffice (`soffice`, isolated per-call profile), then fed through the same PDF pipeline. `soffice` must be on `PATH` for office inputs — otherwise the tool errors (there is no JS fallback for office→PDF). Spreadsheets and other formats are out of scope (spreadsheets paginate badly via PDF).
+
+**Size gate:** identical to `fetch` — Markdown ≤ 32 KB and ≤ 1000 lines is inlined; larger output spills to `${TMPDIR}/pi-doc-to-md/<stamp>-<basename>-<hash>.md` with a 60-line preview + a grep/read-slice hint.
+
+**Configuration (environment variables):**
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PI_DOC_TO_MD_PYMUPDF_VERSION` | `1.27.2.3` | `pymupdf4llm` version pin passed to `uv --with` (digits/dots only) |
+| `PI_DOC_TO_MD_WARM_TIMEOUT_MS` | `120000` | Warm/install call budget — covers the cold wheel (+ managed Python) download |
+| `PI_DOC_TO_MD_CONVERT_TIMEOUT_MS` | `60000` | Per-document conversion budget (also bounds the `unpdf` fallback) |
+| `PI_DOC_TO_MD_SOFFICE_TIMEOUT_MS` | `120000` | LibreOffice `.docx`/`.pptx` → PDF budget |
+
+Python is pinned to **3.14** and is not configurable.
+
+**Runtime dependencies:** `unpdf` (npm, installed automatically via the git tag pin). `uv` and LibreOffice (`soffice`) are optional system binaries detected at runtime: without `uv`, PDFs still convert via the `unpdf` fallback; without `soffice`, office inputs error while PDFs are unaffected.
+
+**Licensing note:** `pymupdf4llm`/PyMuPDF are **AGPL-3.0**. This package ships none of their code — `uv` downloads the wheel from PyPI onto your machine at runtime, and it runs as a **separate subprocess** (never imported or linked into this TypeScript). The arms-length process boundary keeps pi-essentials' MIT license intact; the AGPL governs PyMuPDF itself, whose source is public. This holds only while the boundary stays subprocess-only (no vendoring/importing the wheel).
 
 ## Install
 

@@ -1,6 +1,6 @@
 # pi-essentials
 
-Personal pack of Pi coding-agent extensions, versioned and git-tag-pinned like sibling pi-* packages. Each extension is a standalone default-exported function listed in `package.json` `pi.extensions`. Currently ships `fetch` (context-safe URL retrieval).
+Personal pack of Pi coding-agent extensions, versioned and git-tag-pinned like sibling pi-* packages. Each extension is a standalone default-exported function listed in `package.json` `pi.extensions`. Ships `fetch` (context-safe URL retrieval) and `doc_to_md` (local PDF/DOCX/PPTX -> Markdown via pymupdf4llm with a pure-JS unpdf fallback).
 
 ## Communication Style
 
@@ -46,8 +46,9 @@ prompts/release.md                        # /release prompt template
 - **Adding an extension:** drop `<name>.ts` exporting `default function (pi: ExtensionAPI)`, add `"./<name>.ts"` to `pi.extensions`, document it in `README.md`, add a `CHANGELOG.md` entry.
 - **Typecheck before committing.** The `test` (`node --test`) and `typecheck` (`bun x tsc`) scripts are wired; both require deps installed transiently first (see the install line below):
   ```bash
-  npm install --no-save @earendil-works/pi-coding-agent @earendil-works/pi-tui @sinclair/typebox @types/node jsdom @mozilla/readability turndown turndown-plugin-gfm @types/jsdom @types/turndown
-  bun x tsc --noEmit --allowImportingTsExtensions --target es2022 --module nodenext --moduleResolution nodenext --strict --skipLibCheck --esModuleInterop --resolveJsonModule --lib es2022 --types node fetch.ts fetch.test.ts types/turndown-plugin-gfm.d.ts
+  npm install --no-save @earendil-works/pi-coding-agent @earendil-works/pi-tui @sinclair/typebox @types/node jsdom @mozilla/readability turndown turndown-plugin-gfm @types/jsdom @types/turndown unpdf
+  bun x tsc --noEmit --allowImportingTsExtensions --target es2022 --module nodenext --moduleResolution nodenext --strict --skipLibCheck --esModuleInterop --resolveJsonModule --lib es2022 --types node fetch.ts fetch.test.ts doc_to_md.ts doc_to_md.test.ts types/turndown-plugin-gfm.d.ts
   ```
+- **`doc_to_md` engines.** `scripts/pdf_to_md.py` is the Python conversion entry point, invoked via `uv run --with pymupdf4llm==<pin> --python 3.14` (not under `tsc`/`node --test`; verify by direct uv invocation). DOCX/PPTX route through `soffice` to PDF first. `uv` and `soffice` are optional runtime system binaries; absence degrades to the `unpdf` fallback (PDF) or hard-errors (office).
 - **Releases use the `release` skill.** Consumed via git **tag** pins (`git:github.com/jjuraszek/pi-essentials@vX.Y.Z`); the script bumps the version, pushes the tag, then rewrites matching pins in `~/.pi/agent*/settings.json`. No npm publish. See `.agents/skills/release/SKILL.md` (`--dry-run` / `--no-update-pins` flags).
 - **Smoke-test** with `pi -e ./fetch.ts -p "fetch https://example.com"`.
