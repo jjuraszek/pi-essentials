@@ -7,6 +7,18 @@ This package is consumed via git tag pins (`git:github.com/jjuraszek/pi-essentia
 The release helper at `.agents/skills/release/scripts/release.sh` cuts the tag and
 automatically rewrites every `~/.pi/agent*/settings.json` that pins this repo.
 
+## v2.0.0 — 2026-06-16
+
+- **New `session-name` extension.** Names work sessions; **OFF by default**.
+  - **Manual `/session-name [name]`** sets or prints the session name; always available regardless of config. A manual name suppresses later auto-naming.
+  - **Automatic naming (opt-in):** after the first agent turn, asks the current model for a 3-6 word session title + 1-4 word tab label and applies both, once per session, never overwriting an existing name. Also re-applies the tab label when a named session is resumed.
+  - **Ghostty tab rename** via OSC 2, fired only when the active terminal is really Ghostty (`TERM_PROGRAM=ghostty` / `TERM=xterm-ghostty` / `GHOSTTY_*` dir env) and stdout is a TTY.
+  - **Config `sessionAutoName`** in `settings.json` (`{ "enabled": bool, "ghosttyTab": bool }` or boolean shorthand); project `.pi/settings.json` overrides the global layer. The global `settings.json` is located via pi's `getAgentDir()` (honours `PI_CODING_AGENT_DIR`), so it resolves correctly when installed as a git-tag-pinned package — replacing the previous `import.meta.url` heuristic that only worked for in-tree `extensions/` files.
+  - **Cost:** when enabled, one extra short LLM call per session (low reasoning effort), once. When OFF (default): no model calls, no terminal writes.
+- **New `sword-header` extension.** Replaces the TUI startup logo with a theme-colored ASCII greatsword; **OFF by default**, installed only when enabled via `settings.json` (`swordHeader: true` or `{ "enabled": true }`). `/builtin-header` restores the built-in header at runtime. TUI-only (no-op under `-p`).
+- **New runtime dependency:** `@earendil-works/pi-ai` (peer; matches the host pi runtime).
+- **New shared module `extension-config.ts`:** `getAgentDir()`-based global + project `.pi/settings.json` layering (`resolveConfig`), used by both `session-name` and `sword-header`.
+
 ## v1.0.0 — 2026-06-15
 
 - **New `doc_to_md` extension.** Converts a local PDF/DOCX/PPTX to Markdown.

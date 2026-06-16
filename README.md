@@ -8,6 +8,8 @@ A small pack of [Pi coding-agent](https://github.com/badlogic/pi-mono) extension
 |---|---|---|
 | `fetch.ts` | `fetch` | Retrieve URLs over HTTP(S). HTML → Markdown (main-content extraction, stripped boilerplate). Binary content saved untouched to a temp file. **Context-safe:** output over 32 KB or 1000 lines is written to a temp file with a preview + file path. Prevents a single fetch from flooding the context window. |
 | `doc_to_md.ts` | `doc_to_md` | Convert a local PDF/DOCX/PPTX to Markdown. High-fidelity via `pymupdf4llm` (run through `uv`, fetched on first use); degraded pure-JS fallback (`unpdf`) when `uv`/Python is unavailable or conversion times out. DOCX/PPTX convert via LibreOffice (`soffice`) to PDF first. Same 32 KB / 1000-line size gate as `fetch`. |
+| `session-name.ts` | `/session-name` | Name work sessions. Manual `/session-name [name]` always works. **OFF by default:** when opted in via `settings.json`, after the first agent turn it asks the current model for a concise session name + short tab label and applies them, and renames the **Ghostty** tab via OSC 2 (only when the active terminal is really Ghostty). |
+| `sword-header.ts` | `/builtin-header` | Replace the TUI startup logo with a theme-colored ASCII greatsword (hilt = accent, blade = text). **OFF by default:** only installs the header when opted in via `settings.json`. `/builtin-header` restores the built-in header at runtime. |
 
 ### fetch — content routing & context hygiene
 
@@ -69,6 +71,59 @@ Python is pinned to **3.14** and is not configurable.
 **Runtime dependencies:** `unpdf` (npm, installed automatically via the git tag pin). `uv` and LibreOffice (`soffice`) are optional system binaries detected at runtime: without `uv`, PDFs still convert via the `unpdf` fallback; without `soffice`, office inputs error while PDFs are unaffected.
 
 **Licensing note:** `pymupdf4llm`/PyMuPDF are **AGPL-3.0**. This package ships none of their code — `uv` downloads the wheel from PyPI onto your machine at runtime, and it runs as a **separate subprocess** (never imported or linked into this TypeScript). The arms-length process boundary keeps pi-essentials' MIT license intact; the AGPL governs PyMuPDF itself, whose source is public. This holds only while the boundary stays subprocess-only (no vendoring/importing the wheel).
+
+### session-name — manual + opt-in automatic session naming
+
+Names work sessions so the session selector (and optionally the Ghostty tab) shows what each one is about.
+
+**Behaviors:**
+
+- **Manual `/session-name [name]`** - set the session name, or, with no argument, print the current one. Always available, regardless of config. A manual name wins: it suppresses later auto-naming for the session.
+- **Automatic naming (opt-in).** After the first agent turn completes, if no name is set yet, the extension asks the **current model** for a 3-6 word session title plus a 1-4 word tab label and applies both. It only runs once per session and never overwrites an existing name.
+- **Resume reflection (opt-in).** When a session that already carries a name is loaded/resumed, its tab label is re-applied so the Ghostty tab matches.
+- **Ghostty tab rename.** The short label is written via OSC 2 (`ESC ] 2 ; <label> BEL`) **only when the active terminal is really Ghostty** (`TERM_PROGRAM=ghostty`, `TERM=xterm-ghostty`, or a `GHOSTTY_*` dir env) **and** stdout is a TTY. Other terminals are never touched.
+
+**OFF by default.** All automatic behavior (auto-naming + resume reflection) is inert until explicitly enabled. The manual command is unaffected.
+
+**Configuration** (`settings.json`, **project `.pi/settings.json` overrides the global agent-dir `settings.json`**). The global path is resolved via pi's own `getAgentDir()` (honours `PI_CODING_AGENT_DIR`, else `~/.pi/agent`), so it stays correct when this package is installed via a git tag pin.
+
+```jsonc
+{
+  // full form, defaults shown
+  "sessionAutoName": { "enabled": false, "ghosttyTab": true }
+}
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | Master switch for automatic naming + resume reflection. |
+| `ghosttyTab` | `true` | Whether to rename the Ghostty tab (only ever fires when the terminal is actually Ghostty). |
+
+Boolean shorthand: `"sessionAutoName": true` enables everything (equivalent to `{ "enabled": true, "ghosttyTab": true }`); `false` disables everything.
+
+**Cost note:** when enabled, automatic naming makes **one extra short LLM call** per session (low reasoning effort, current model, a few-thousand-char conversation digest), once, after the first turn. When OFF (the default) it makes **no** model calls and writes **nothing** to the terminal.
+
+**Runtime dependency:** `@earendil-works/pi-ai` (the unified LLM API bundled with the pi runtime; installed automatically via the git tag pin).
+
+### sword-header — themed ASCII startup header
+
+Replaces pi's built-in startup logo with a hero's greatsword (Michael J. Penick longsword, asciiart.eu). The ASCII art is verbatim; only the coloring is ours - hilt/grip/pommel use the `accent` token, the blade uses `text`, so it tracks whatever theme is active.
+
+**Behaviors:**
+
+- **TUI only.** Installs a custom header on `session_start` when `ctx.mode === "tui"`. In print/non-interactive mode (`-p`) it does nothing.
+- **`/builtin-header`** restores the built-in pi header at runtime (always available).
+
+**OFF by default.** The header is only installed when explicitly enabled via `settings.json`.
+
+**Configuration** (`settings.json`, project `.pi/settings.json` overrides the global agent-dir layer; same resolution as `session-name`):
+
+```jsonc
+{
+  "swordHeader": false           // default; true installs the header
+  // object form also accepted: "swordHeader": { "enabled": true }
+}
+```
 
 ## Install
 

@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "test": "node --test \"*.test.ts\"",
-    "typecheck": "bun x tsc --noEmit --allowImportingTsExtensions --target es2022 --module nodenext --moduleResolution nodenext --strict --skipLibCheck --esModuleInterop --resolveJsonModule --lib es2022 --types node fetch.ts fetch.test.ts doc_to_md.ts doc_to_md.test.ts types/turndown-plugin-gfm.d.ts"
+    "typecheck": "bun x tsc --noEmit --allowImportingTsExtensions --target es2022 --module nodenext --moduleResolution nodenext --strict --skipLibCheck --esModuleInterop --resolveJsonModule --lib es2022 --types node fetch.ts fetch.test.ts doc_to_md.ts doc_to_md.test.ts session-name.ts session-name.test.ts sword-header.ts sword-header.test.ts extension-config.ts types/turndown-plugin-gfm.d.ts"
   },
   "keywords": [
     "pi-package"
@@ -22,7 +22,9 @@
   "pi": {
     "extensions": [
       "./fetch.ts",
-      "./doc_to_md.ts"
+      "./doc_to_md.ts",
+      "./session-name.ts",
+      "./sword-header.ts"
     ]
   },
   "dependencies": {
@@ -33,6 +35,7 @@
     "unpdf": "^1.6.0"
   },
   "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*",
     "@sinclair/typebox": "*"
