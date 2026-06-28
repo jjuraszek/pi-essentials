@@ -17,9 +17,21 @@
  * Boolean shorthand: "sessionAutoName": true  // enables everything
  */
 
-import { complete } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { resolveConfig } from "./extension-config.ts";
+
+// `complete` moved between pi-ai layouts: older builds re-export it from the
+// package index, newer ones expose it only via the `/compat` subpath. A static
+// import that targets one breaks at load time on the other (and a missing
+// export aborts the whole extension, killing the manual command too). Resolve
+// it lazily at call time, trying the index first then `/compat`.
+type CompleteFn = typeof import("@earendil-works/pi-ai/compat").complete;
+
+async function loadComplete(): Promise<CompleteFn> {
+	const index = (await import("@earendil-works/pi-ai")) as Record<string, unknown>;
+	if (typeof index.complete === "function") return index.complete as CompleteFn;
+	return (await import("@earendil-works/pi-ai/compat")).complete;
+}
 
 type Config = { enabled: boolean; ghosttyTab: boolean };
 const DEFAULT_CONFIG: Config = { enabled: false, ghosttyTab: true };
@@ -145,7 +157,12 @@ async function generateName(ctx: ExtensionContext): Promise<GeneratedName | unde
 	const model = ctx.model;
 	if (!model) return undefined;
 	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-	if (!auth?.ok || !auth.apiKey) return undefined;
+	// ok=true with apiKey=undefined is the env-key path: the key lives in
+	// process.env (e.g. ANTHROPIC_API_KEY), not auth.json. getApiKeyAndHeaders
+	// deliberately opts out of the env fallback (includeFallback: false), so it
+	// reports no apiKey. Don't bail on that - complete() resolves the env key
+	// itself via withEnvApiKey/getEnvApiKey. Only bail when auth genuinely failed.
+	if (!auth?.ok) return undefined;
 
 	const prompt = [
 		"Name this work session based on the concrete task being done below.",
@@ -164,6 +181,7 @@ async function generateName(ctx: ExtensionContext): Promise<GeneratedName | unde
 		"</conversation>",
 	].join("\n");
 
+	const complete = await loadComplete();
 	const response = await complete(
 		model,
 		{
@@ -171,7 +189,7 @@ async function generateName(ctx: ExtensionContext): Promise<GeneratedName | unde
 				{ role: "user" as const, content: [{ type: "text" as const, text: prompt }], timestamp: Date.now() },
 			],
 		},
-		{ apiKey: auth.apiKey, headers: auth.headers, reasoningEffort: "low" },
+		{ apiKey: auth.apiKey, headers: auth.headers, env: auth.env, reasoningEffort: "low" },
 	);
 
 	const raw = response.content

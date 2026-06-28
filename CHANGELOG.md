@@ -7,6 +7,12 @@ This package is consumed via git tag pins (`git:github.com/jjuraszek/pi-essentia
 The release helper at `.agents/skills/release/scripts/release.sh` cuts the tag and
 automatically rewrites every `~/.pi/agent*/settings.json` that pins this repo.
 
+## v2.0.2 — 2026-06-28
+
+- **`session-name`: fix auto-naming silently never running.** Two bugs compounded into zero auto-named sessions:
+  - **Env-key auth was rejected.** `generateName` bailed on `!auth.apiKey`, but `ModelRegistry.getApiKeyAndHeaders` resolves keys with `includeFallback: false` — so a key that lives only in the environment (e.g. `ANTHROPIC_API_KEY`, the common case with no stored provider credential) returns `ok: true` with `apiKey: undefined`. The bail discarded that path even though `complete()` resolves the env key itself via `withEnvApiKey`/`getEnvApiKey`. Now only bails on `!auth.ok`, and forwards `auth.env`.
+  - **Fragile `complete` import.** `complete` is re-exported from the pi-ai package index in older builds but only from the `/compat` subpath in newer ones; the static `import { complete }` aborted extension load entirely (taking the manual command with it) whenever the installed pi-ai used the other layout. Now resolved lazily at call time, trying the index then `/compat`.
+
 ## v2.0.1 — 2026-06-18
 
 - **`session-name`: keep the Ghostty tab in sync with the session name.** Pi owns the OS terminal title (OSC 0, `pi - <name> - <cwd>`) and rewrites it on every name change and session switch, clobbering our short OSC-2 tab label. The extension now re-asserts the tab label at the start of every turn (`turn_start`) — the only hook that fires after pi's writer on a session swap — so the tab and the session name move together. Self-heals when the name is changed outside the extension (re-derives the label from the new name) and reflects names on reload as well as resume. No behavior when OFF (default).
